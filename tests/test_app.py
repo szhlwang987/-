@@ -85,7 +85,7 @@ class Workflow(unittest.TestCase):
   wb=load_workbook(BytesIO(self.c.get('/api/batches/'+r.json()['id']+'/closing-inventory').content))
   ws=wb.active
   self.assertEqual(ws['A1'].value,'物料编号')
-  self.assertAlmostEqual(ws.column_dimensions['A'].width,17.7109375,places=4)
+  self.assertAlmostEqual(ws.column_dimensions['A'].width,19.7109375,places=4)
   self.assertEqual(ws['A1'].alignment.horizontal,'left'); self.assertEqual(ws['A2'].alignment.horizontal,'left')
  def test_dated_inventory_write_failure(self):
   from unittest.mock import patch

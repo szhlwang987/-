@@ -198,7 +198,7 @@ def closing_workbook(batch):
         left=key in ['code','spec','package','supplier']
         widths={'code':19,'spec':36,'package':30,'supplier':30,'stock':12,'min_unit':15}
         fmt=workbook.add_format({'align':'left' if left else 'center','valign':'vcenter','num_format':'0.#########'})
-        values=[label]+[str(row.get(key,'')) for row in closing_inventory(batch)]; sheet.set_column(j,j,max(1,max((len(str(v)) for v in values),default=0)+3),fmt)
+        values=[label]+[str(row.get(key,'')) for row in closing_inventory(batch)]; sheet.set_column(j,j,max(1,max((len(str(v)) for v in values),default=0)+5),fmt)
         sheet.write(0,j,label,workbook.add_format({'bold':True,'align':'left' if left else 'center','bg_color':'#DBEAFE','border':1}))
         for i,row in enumerate(closing_inventory(batch),1):
             value=float(dec(row['stock'])) if key=='stock' else row.get(key,'')
@@ -297,7 +297,7 @@ def export(id:str,inventory_only:bool=False):
             align='left' if label in long_fields else 'center'
             base=field_widths.get(label,12)
             values=[str(label)]+[str(row[j]) for row in rows if j<len(row)]
-            content_width=max(1,max((len(v) for v in values),default=0)+3)
+            content_width=max(1,max((len(v) for v in values),default=0)+5)
             s.set_column(j,j,content_width,formats[align])
             s.write(0,j,label,headers[align])
         for i,row in enumerate(rows,1):
