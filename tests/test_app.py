@@ -17,7 +17,7 @@ class Workflow(unittest.TestCase):
  def test_complete_workflow(self):
   b=self.batch();self.assertEqual(len(b['lines']),12);self.assertEqual(len(b['supplemented']),6)
   resistor=next(l for l in b['lines'] if l['code']=='R-0402-100R-01')
-  self.assertEqual(resistor['auto'],'111378.000');self.assertEqual(resistor['gross'],'126000')
+  self.assertEqual(resistor['auto'],'111378.000'); self.assertEqual(resistor['final'],'111378.000');self.assertEqual(resistor['gross'],'126000')
   r=self.c.post('/api/batches/'+b['id']+'/revise',json={'adjustments':{resistor['code']:{'final':'111000','reason':'试算'}},'purchase_basis':'final','simulation':[{'code':resistor['code'],'incoming':'900','outgoing':'50','production':'1000'}]})
   self.assertEqual(r.status_code,200,r.text);new=r.json()
   self.assertNotEqual(new['id'],b['id']);self.assertEqual(next(l for l in new['lines'] if l['code']==resistor['code'])['balance'],'-378.000')
@@ -25,9 +25,9 @@ class Workflow(unittest.TestCase):
   self.assertIsNone(self.c.get('/api/batches/'+b['id']).json()['purchase'])
   out=self.c.get('/api/batches/'+new['id']+'/export');self.assertEqual(out.status_code,200)
   wb=load_workbook(BytesIO(out.content));self.assertGreaterEqual(len(wb.sheetnames),9)
-  self.assertTrue(wb['发料记录']['H2'].value.startswith('='))
+  self.assertTrue(wb['发料记录']['I2'].value.startswith('='))
   cached=load_workbook(BytesIO(out.content),data_only=True)
-  self.assertIsInstance(cached['发料记录']['H2'].value,(int,float))
+  self.assertIsInstance(cached['发料记录']['I2'].value,(int,float))
   inv=load_workbook(BytesIO(self.c.get('/api/batches/'+b['id']+'/export?inventory_only=true').content))
   self.assertEqual(inv['库存明细'].max_row,13)
  def test_export_fields_formats_and_suppliers(self):
@@ -56,7 +56,7 @@ class Workflow(unittest.TestCase):
     self.assertEqual(c.alignment.horizontal,'left' if wide else 'center',(sheet.title,c.coordinate))
     letter=get_column_letter(j)
     dim=next(d for d in sheet.column_dimensions.values() if d.min<=j<=d.max)
-    expected={'客户物料编码':16,'物料编号':19,'规格型号':36,'规格/型号':36,'BOM版本':12,'采购数量':15,'单机用量':15,'损耗后需求':16,'封装':30,'供应商':30,'来源':30}.get(c.value,12)
+    expected={'客户物料编码':16,'物料编号':19,'规格型号':36,'规格/型号':36,'BOM版本':12,'采购数量':15,'单机用量':15,'损耗后需求':16,'最小采购单位':15,'封装':30,'供应商':30,'来源':30}.get(c.value,12)
     self.assertAlmostEqual(dim.width,expected+0.7109375,places=4)
     if sheet.max_row>1:
      self.assertEqual(sheet.cell(2,j).alignment.horizontal,'left' if wide else 'center',(sheet.title,letter))
@@ -99,6 +99,14 @@ class Workflow(unittest.TestCase):
   b=self.batch();l=b['lines'][0]
   r=self.c.post('/api/batches/'+b['id']+'/revise',json={'adjustments':{l['code']:{'final':'1'}}})
   self.assertEqual(r.status_code,400)
+ def test_minimum_purchase_unit_rounds_automatic_final(self):
+  d=self.c.post('/api/demo').json()
+  for row in d['inventory']['rows']:
+   if row['code']=='IC-99013F': row['min_unit']='1000'
+  b=self.c.post('/api/calculate',json=d).json(); l=next(x for x in b['lines'] if x['code']=='IC-99013F')
+  self.assertEqual(l['auto'],'6063.000'); self.assertEqual(l['final'],'7000'); self.assertEqual(l['balance'],'937.000')
+  r=self.c.post('/api/batches/'+b['id']+'/revise',json={'adjustments':{l['code']:{'final':'6063','reason':'人工按实际数量'}},'purchase_basis':'final'})
+  self.assertEqual(r.status_code,200,r.text); self.assertEqual(next(x for x in r.json()['lines'] if x['code']==l['code'])['final'],'6063')
  def test_supplier_comes_from_imported_inventory(self):
   d=self.c.post('/api/demo').json()
   for row in d['inventory']['rows']:

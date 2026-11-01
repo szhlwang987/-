@@ -58,9 +58,13 @@ def table(raw, aliases, required):
                 return result
     raise ValueError('未识别必需表头：'+','.join(required))
 
-ALIASES={'code':['物料编号','物料编码'], 'spec':['规格/型号','规格型号','型号'], 'package':['封装'], 'qty':['采购数量'], 'stock':['库存','结存','结存数量','库存数量'], 'usage':['用量','单机用量'], 'order':['订单号','订单编号'], 'supplier':['供应商']}
+ALIASES={'code':['物料编号','物料编码'], 'spec':['规格/型号','规格型号','型号'], 'package':['封装'], 'qty':['采购数量'], 'stock':['库存','结存','结存数量','库存数量'], 'usage':['用量','单机用量'], 'order':['订单号','订单编号'], 'supplier':['供应商'], 'min_unit':['最小采购单位','最小采购量','采购最小单位','MOQ']}
 
 def digest(raw): return hashlib.sha256(raw).hexdigest()
+
+def ceil_unit(value, unit):
+    if unit <= 0: return value
+    return (value / unit).to_integral_value(rounding='ROUND_CEILING') * unit
 
 def scan():
     if not BOM_DIR.is_dir(): raise ValueError(f'目录不存在：{BOM_DIR}')
@@ -139,7 +143,10 @@ def calculate(req:Calculate):
         for m,item in sorted(materials.items()):
             s=inventory.get(m); stock=dec(s['stock']) if s else Decimal(0)
             demand=item['gross']*Decimal('1.003'); auto=max(Decimal(0),demand-stock)
-            item.update(gross=str(item['gross']),demand=str(demand),stock=str(stock),supplier=(s or {}).get('supplier',''),auto=str(auto),final=str(auto),balance=str(stock+auto-demand),reason='')
+            min_unit=dec((s or {}).get('min_unit','0') or '0')
+            if min_unit < 0: raise ValueError(f'{m}：最小采购单位不能为负数')
+            automatic_final=ceil_unit(auto,min_unit)
+            item.update(gross=str(item['gross']),demand=str(demand),stock=str(stock),supplier=(s or {}).get('supplier',''),min_unit=str(min_unit),auto=str(auto),final=str(automatic_final),balance=str(stock+automatic_final-demand),reason='')
             lines.append(item)
             if not s:
                 supplemented.append({'code':m,'spec':item['spec'],'package':item['package'],'stock':'0','source':'BOM 自动补充'})
@@ -186,10 +193,10 @@ def closing_workbook(batch):
     output=BytesIO()
     workbook=xlsxwriter.Workbook(output,{'in_memory':True,'strings_to_formulas':False,'strings_to_urls':False})
     sheet=workbook.add_worksheet('库存明细')
-    columns=[('code','物料编号'),('spec','规格/型号'),('package','封装'),('stock','库存'),('supplier','供应商')]
+    columns=[('code','物料编号'),('spec','规格型号'),('package','封装'),('stock','库存'),('supplier','供应商'),('min_unit','最小采购单位')]
     for j,(key,label) in enumerate(columns):
         left=key in ['code','spec','package','supplier']
-        widths={'code':19,'spec':36,'package':30,'supplier':30,'stock':12}
+        widths={'code':19,'spec':36,'package':30,'supplier':30,'stock':12,'min_unit':15}
         fmt=workbook.add_format({'align':'left' if left else 'center','valign':'vcenter','num_format':'0.#########'})
         sheet.set_column(j,j,widths[key],fmt)
         sheet.write(0,j,label,workbook.add_format({'bold':True,'align':'left' if left else 'center','bg_color':'#DBEAFE','border':1}))
@@ -266,7 +273,7 @@ def revise(id:str,req:Revision):
 @app.get('/api/batches/{id}/export')
 def export(id:str,inventory_only:bool=False):
     b=load(id); output=BytesIO(); w=xlsxwriter.Workbook(output,{'in_memory':True,'strings_to_formulas':False,'strings_to_urls':False})
-    field_widths={'客户物料编码':16,'物料编号':19,'规格型号':36,'规格/型号':36,'BOM版本':12,'采购数量':15,'单机用量':15,'损耗后需求':16,'封装':30,'供应商':30,'来源':30}
+    field_widths={'客户物料编码':16,'物料编号':19,'规格型号':36,'规格/型号':36,'BOM版本':12,'采购数量':15,'单机用量':15,'损耗后需求':16,'封装':30,'供应商':30,'来源':30,'最小采购单位':15}
     long_fields={'客户物料编码','物料编号','规格型号','规格/型号','封装','供应商','来源'}
     formats={align:w.add_format({'align':align,'valign':'vcenter','num_format':'0.#########'}) for align in ['left','center']}
     headers={align:w.add_format({'bold':True,'bg_color':'#DBEAFE','border':1,'align':align,'valign':'vcenter'}) for align in ['left','center']}
@@ -288,18 +295,18 @@ def export(id:str,inventory_only:bool=False):
             for src in l['sources']: details.append([src['pcba'],src['version'],l['code'],l['spec'],l['package'],float(dec(src['usage']))])
         sheet('BOM 明细',['客户物料编码','BOM版本','物料编号','规格/型号','封装','单机用量'],details)
         sheet('物料需求汇总',['物料编号','规格/型号','总用量','损耗后需求','库存'],[[l['code'],l['spec'],float(dec(l['gross'])),float(dec(l['demand'])),float(dec(l['stock']))] for l in b['lines']])
-        s=sheet('发料记录',['物料编号','规格/型号','封装','总用量','库存','自动发料','最终发料','理论结存','修改原因'],[])
+        s=sheet('发料记录',['物料编号','规格型号','封装','最小采购单位','总用量','库存','自动发料','最终发料','理论结存','修改原因'],[])
         for i,l in enumerate(b['lines'],1):
-            n=i+1; s.write_row(i,0,[l['code'],l['spec'],l['package'],float(dec(l['gross'])),float(dec(l['stock']))])
-            s.write_formula(i,5,f'=MAX(0,D{n}*1.003-E{n})',None,float(dec(l['auto'])))
-            s.write_number(i,6,float(dec(l['final']))); s.write_formula(i,7,f'=E{n}+G{n}-D{n}*1.003',None,float(dec(l['balance']))); s.write(i,8,l['reason'],formats['center'])
+            n=i+1; s.write_row(i,0,[l['code'],l['spec'],l['package'],float(dec(l.get('min_unit','0'))),float(dec(l['gross'])),float(dec(l['stock']))])
+            s.write_formula(i,6,f'=MAX(0,E{n}*1.003-F{n})',None,float(dec(l['auto'])))
+            s.write_number(i,7,float(dec(l['final']))); s.write_formula(i,8,f'=F{n}+H{n}-E{n}*1.003',None,float(dec(l['balance']))); s.write(i,9,l['reason'],formats['center'])
         po=b['purchase']; lookup={l['code']:l for l in b['lines']}
         if po:
             for order in po['orders']:
                 safe=re.sub(r'[^0-9A-Za-z一-龥_-]+','_',order['supplier'])[:20]
-                sheet('采购订单-'+safe,['采购单号','物料编号','规格型号','封装','采购数量','供应商','其他字段'],[[order['number'],l['code'],lookup[l['code']]['spec'],lookup[l['code']]['package'],float(dec(l['qty'])),order['supplier'],po['basis']] for l in order['lines']])
+                sheet('采购订单-'+safe,['采购单号','物料编号','规格型号','封装','最小采购单位','采购数量','供应商','其他字段'],[[order['number'],l['code'],lookup[l['code']]['spec'],lookup[l['code']]['package'],float(dec(lookup[l['code']].get('min_unit','0'))),float(dec(l['qty'])),order['supplier'],po['basis']] for l in order['lines']])
         else:
-            sheet('采购订单',['采购单号','物料编号','规格型号','封装','采购数量','供应商','其他字段'],[])
+            sheet('采购订单',['采购单号','物料编号','规格型号','封装','最小采购单位','采购数量','供应商','其他字段'],[])
         sim=sheet('库存模拟',['物料编号','库存','模拟入库','模拟发料','模拟净需求','模拟结存'],[])
         lookup={l['code']:l for l in b['lines']}
         for i,r in enumerate(b['simulation'],1):
@@ -307,7 +314,7 @@ def export(id:str,inventory_only:bool=False):
             sim.write_formula(i,5,f'=B{n}+C{n}-D{n}-E{n}*1.003',None,float(dec(r['balance'])))
         sheet('异常检查',['问题','状态'],[])
         sheet('计算记录',['参数','值'],[['批次',b['id']],['时间',b['created']],['损耗系数',b['factor']],['算法',b['algorithm']],['BOM版本及摘要',json.dumps(b['boms'],ensure_ascii=False)],['订单摘要',b['orders'].get('sha','')],['库存摘要',b['inventory'].get('sha','')],['采购口径',po['basis'] if po else '未生成'],['采购订单数',len(po['orders']) if po else 0]])
-    sheet('库存明细',['物料编号','规格/型号','封装','库存','来源'],[[r['code'],r.get('spec',''),r.get('package',''),float(dec(r['stock'])),r['source']] for r in inventory])
+    sheet('库存明细',['物料编号','规格型号','封装','库存','供应商','最小采购单位','来源'],[[r['code'],r.get('spec',''),r.get('package',''),float(dec(r['stock'])),r.get('supplier',''),float(dec(r.get('min_unit','0') or '0')),r['source']] for r in inventory])
     w.close()
     return Response(output.getvalue(),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':f'attachment; filename="pcba-{id[:8]}.xlsx"'})
 
