@@ -40,6 +40,7 @@ class Workflow(unittest.TestCase):
   self.assertEqual(supplier,'供应商1')
   wb=load_workbook(BytesIO(self.c.get('/api/batches/'+b['id']+'/export').content))
   self.assertEqual(wb['BOM 明细']['A1'].value,'客户物料编码')
+  self.assertEqual(wb['订单汇总']['B1'].value,'客户物料编码')
   self.assertEqual([c.value for c in wb['库存明细'][1]][3:6],['库存','最小采购单位','供应商'])
   self.assertEqual({row[0].value for row in list(wb['BOM 明细'].rows)[1:]},{'A79A1900032','ZNDZ000042'})
   for name in ['发料记录']:
@@ -84,7 +85,7 @@ class Workflow(unittest.TestCase):
   wb=load_workbook(BytesIO(self.c.get('/api/batches/'+r.json()['id']+'/closing-inventory').content))
   ws=wb.active
   self.assertEqual(ws['A1'].value,'物料编号')
-  self.assertAlmostEqual(ws.column_dimensions['A'].width,16.7109375,places=4)
+  self.assertAlmostEqual(ws.column_dimensions['A'].width,17.7109375,places=4)
   self.assertEqual(ws['A1'].alignment.horizontal,'left'); self.assertEqual(ws['A2'].alignment.horizontal,'left')
  def test_dated_inventory_write_failure(self):
   from unittest.mock import patch
