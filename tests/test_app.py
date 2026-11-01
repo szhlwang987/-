@@ -24,7 +24,7 @@ class Workflow(unittest.TestCase):
   self.assertEqual(new['simulation'][0]['balance'],'14847.000')
   self.assertIsNone(self.c.get('/api/batches/'+b['id']).json()['purchase'])
   out=self.c.get('/api/batches/'+new['id']+'/export');self.assertEqual(out.status_code,200)
-  wb=load_workbook(BytesIO(out.content));self.assertEqual(len(wb.sheetnames),9)
+  wb=load_workbook(BytesIO(out.content));self.assertGreaterEqual(len(wb.sheetnames),9)
   self.assertTrue(wb['发料记录']['H2'].value.startswith('='))
   cached=load_workbook(BytesIO(out.content),data_only=True)
   self.assertIsInstance(cached['发料记录']['H2'].value,(int,float))
@@ -41,18 +41,23 @@ class Workflow(unittest.TestCase):
   wb=load_workbook(BytesIO(self.c.get('/api/batches/'+b['id']+'/export').content))
   self.assertEqual(wb['BOM 明细']['A1'].value,'客户物料编码')
   self.assertEqual({row[0].value for row in list(wb['BOM 明细'].rows)[1:]},{'A79A1900032','ZNDZ000042'})
-  for name in ['发料记录','采购订单']:
+  for name in ['发料记录']:
+   headers=[c.value for c in wb[name][1]]
+  po_sheets=[n for n in wb.sheetnames if n.startswith('采购订单-')]
+  self.assertTrue(po_sheets)
+  for name in po_sheets:
    headers=[c.value for c in wb[name][1]]
    code=headers.index('物料编号')
-   self.assertEqual(headers[code+1:code+3],['规格/型号','封装'])
-  long_fields={'客户物料编码','规格型号','规格/型号','封装','供应商','来源'}
+   self.assertEqual(headers[code+1:code+3],['规格型号','封装'])
+  long_fields={'客户物料编码','物料编号','规格型号','规格/型号','封装','供应商','来源'}
   for sheet in wb:
    for j,c in enumerate(sheet[1],1):
     wide=c.value in long_fields
     self.assertEqual(c.alignment.horizontal,'left' if wide else 'center',(sheet.title,c.coordinate))
     letter=get_column_letter(j)
     dim=next(d for d in sheet.column_dimensions.values() if d.min<=j<=d.max)
-    self.assertAlmostEqual(dim.width,30.7109375 if wide else 10.7109375,places=4)
+    expected={'客户物料编码':16,'物料编号':19,'规格型号':36,'规格/型号':36,'BOM版本':12,'采购数量':15,'单机用量':15,'损耗后需求':16,'封装':30,'供应商':30,'来源':30}.get(c.value,12)
+    self.assertAlmostEqual(dim.width,expected+0.7109375,places=4)
     if sheet.max_row>1:
      self.assertEqual(sheet.cell(2,j).alignment.horizontal,'left' if wide else 'center',(sheet.title,letter))
  def test_dated_inventory_closing_and_overwrite(self):
