@@ -316,11 +316,14 @@ def export(id:str,inventory_only:bool=False):
             for src in l['sources']: details.append([src['pcba'],src['version'],l['code'],l['spec'],l['package'],float(dec(src['usage']))])
         sheet('BOM 明细',['客户物料编码','BOM版本','物料编号','规格/型号','封装','单机用量'],details)
         sheet('物料需求汇总',['物料编号','规格/型号','总用量','损耗后需求','库存'],[[l['code'],l['spec'],float(dec(l['gross'])),float(dec(l['demand'])),float(dec(l['stock']))] for l in b['lines']])
-        s=sheet('发料记录',['物料编号','规格型号','封装','最小采购单位','总用量','库存','自动发料','最终发料','理论结存','修改原因'],[])
+        issue_rows=[[l['code'],l['spec'],l['package'],float(dec(l.get('min_unit','0'))),float(dec(l['gross'])),float(dec(l['stock'])),float(dec(l['auto'])),float(dec(l['final'])),float(dec(l['balance'])),l['reason']] for l in b['lines']]
+        s=sheet('发料记录',['物料编号','规格/型号','封装','最小包装','总用量','库存','自动发料','最终发料','理论结存','调整原因'],issue_rows)
         for i,l in enumerate(b['lines'],1):
-            n=i+1; s.write_row(i,0,[l['code'],l['spec'],l['package'],float(dec(l.get('min_unit','0'))),float(dec(l['gross'])),float(dec(l['stock']))])
+            n=i+1
             s.write_formula(i,6,f'=MAX(0,E{n}*1.003-F{n})',None,float(dec(l['auto'])))
-            s.write_number(i,7,float(dec(l['final']))); s.write_formula(i,8,f'=F{n}+H{n}-E{n}*1.003',None,float(dec(l['balance']))); s.write(i,9,l['reason'],formats['center'])
+            s.write_number(i,7,float(dec(l['final'])))
+            s.write_formula(i,8,f'=F{n}+H{n}-E{n}*1.003',None,float(dec(l['balance'])))
+            s.write(i,9,l['reason'],formats['center'])
         po=b['purchase']; lookup={l['code']:l for l in b['lines']}
         if po:
             for order in po['orders']:
