@@ -91,6 +91,16 @@ class Workflow(unittest.TestCase):
   b=self.batch();l=b['lines'][0]
   r=self.c.post('/api/batches/'+b['id']+'/revise',json={'adjustments':{l['code']:{'final':'1'}}})
   self.assertEqual(r.status_code,400)
+ def test_supplier_comes_from_imported_inventory(self):
+  d=self.c.post('/api/demo').json()
+  for row in d['inventory']['rows']:
+   row['supplier']='当前导入供应商-'+row['code']
+  b=self.c.post('/api/calculate',json=d).json()
+  self.assertEqual(next(l for l in b['lines'] if l['code']=='R-0402-100R-01')['supplier'],'当前导入供应商-R-0402-100R-01')
+  r=self.c.post('/api/batches/'+b['id']+'/revise',json={'purchase_basis':'final'})
+  self.assertEqual(r.status_code,200,r.text)
+  po=r.json()['purchase']
+  self.assertIn('当前导入供应商-R-0402-100R-01',{o['supplier'] for o in po['orders']})
  def test_upload_actual_formats(self):
   from app.main import ROOT
   for kind,name in [('order','客户订单-待处理.xls'),('stock','物料库存总表.xls')]:

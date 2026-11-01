@@ -139,7 +139,7 @@ def calculate(req:Calculate):
         for m,item in sorted(materials.items()):
             s=inventory.get(m); stock=dec(s['stock']) if s else Decimal(0)
             demand=item['gross']*Decimal('1.003'); auto=max(Decimal(0),demand-stock)
-            item.update(gross=str(item['gross']),demand=str(demand),stock=str(stock),auto=str(auto),final=str(auto),balance=str(stock+auto-demand),reason='')
+            item.update(gross=str(item['gross']),demand=str(demand),stock=str(stock),supplier=(s or {}).get('supplier',''),auto=str(auto),final=str(auto),balance=str(stock+auto-demand),reason='')
             lines.append(item)
             if not s:
                 supplemented.append({'code':m,'spec':item['spec'],'package':item['package'],'stock':'0','source':'BOM 自动补充'})
@@ -220,7 +220,7 @@ def revise(id:str,req:Revision):
             line['balance']=str(dec(line['stock'])+dec(line['final'])-dec(line['demand']))
         if req.purchase_basis:
             if req.purchase_basis not in ['auto','final']: raise ValueError('请选择采购口径')
-            all_lines=[dict(code=l['code'],qty=l[req.purchase_basis],supplier=next((r.get('supplier','') for r in b['inventory']['rows'] if r['code']==l['code']),'')) for l in b['lines'] if dec(l[req.purchase_basis])>0]
+            all_lines=[dict(code=l['code'],qty=l[req.purchase_basis],supplier=l.get('supplier','')) for l in b['lines'] if dec(l[req.purchase_basis])>0]
             grouped={}
             for line in all_lines: grouped.setdefault(line['supplier'] or '未指定供应商',[]).append(line)
             orders=[]
