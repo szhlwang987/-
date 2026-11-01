@@ -50,7 +50,7 @@ class Workflow(unittest.TestCase):
   for name in po_sheets:
    headers=[c.value for c in wb[name][1]]
    code=headers.index('物料编号')
-   self.assertEqual(headers[code+1:code+3],['规格型号','封装'])
+   self.assertEqual(headers[code+1:code+3],['规格/型号','封装'])
   long_fields={'客户物料编码','物料编号','规格型号','规格/型号','封装','供应商','来源'}
   for sheet in wb:
    for j,c in enumerate(sheet[1],1):
