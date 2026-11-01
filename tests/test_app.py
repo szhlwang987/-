@@ -119,6 +119,7 @@ class Workflow(unittest.TestCase):
   self.assertEqual(r.status_code,200,r.text)
   po=r.json()['purchase']
   self.assertIn('当前导入供应商-R-0402-100R-01',{o['supplier'] for o in po['orders']})
+  self.assertTrue(all(o['number'].startswith('PO-') for o in po['orders']))
  def test_upload_actual_formats(self):
   from app.main import ROOT
   for kind,name in [('order','客户订单-待处理.xls'),('stock','物料库存总表.xls')]:

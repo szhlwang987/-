@@ -2,7 +2,7 @@ from pathlib import Path
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from io import BytesIO
-import os, json, sqlite3, hashlib, re, uuid
+import os, json, sqlite3, hashlib, re, uuid, unicodedata
 from zoneinfo import ZoneInfo
 from threading import Lock
 import pandas as pd
@@ -59,6 +59,10 @@ def table(raw, aliases, required):
     raise ValueError('未识别必需表头：'+','.join(required))
 
 ALIASES={'code':['物料编号','物料编码'], 'spec':['规格/型号','规格型号','型号'], 'package':['封装'], 'qty':['采购数量'], 'stock':['库存','结存','结存数量','库存数量'], 'usage':['用量','单机用量'], 'order':['订单号','订单编号'], 'supplier':['供应商'], 'min_unit':['最小包装','最小采购单位','最小采购量','采购最小单位','MOQ'], 'type':['类型','物料类型']}
+
+def display_width(value):
+    text=str(value if value is not None else '').strip()
+    return sum(2 if unicodedata.east_asian_width(ch) in 'WFA' else 1 for ch in text)
 
 def digest(raw): return hashlib.sha256(raw).hexdigest()
 
@@ -198,7 +202,7 @@ def closing_workbook(batch):
         left=key in ['code','spec','package','supplier']
         widths={'code':19,'spec':36,'package':30,'supplier':30,'stock':12,'min_unit':15}
         fmt=workbook.add_format({'align':'left' if left else 'center','valign':'vcenter','num_format':'0.#########'})
-        values=[label]+[str(row.get(key,'')) for row in closing_inventory(batch)]; sheet.set_column(j,j,max(1,max((len(str(v)) for v in values),default=0)+5),fmt)
+        values=[label]+[str(row.get(key,'')) for row in closing_inventory(batch)]; sheet.set_column(j,j,max(1,max((display_width(v) for v in values),default=0)+5),fmt)
         sheet.write(0,j,label,workbook.add_format({'bold':True,'align':'left' if left else 'center','bg_color':'#DBEAFE','border':1}))
         for i,row in enumerate(closing_inventory(batch),1):
             value=float(dec(row['stock'])) if key=='stock' else row.get(key,'')
@@ -220,11 +224,11 @@ def next_purchase_number(date_code, count=1):
         for (payload,) in c.execute('SELECT payload FROM batches'):
             try:
                 for order in (json.loads(payload).get('purchase') or {}).get('orders',[]):
-                    m=re.match(r'^PX-'+date_code+r'-(\d{3})$',order.get('number',''))
+                    m=re.match(r'^PO-'+date_code+r'-(\d{3})$',order.get('number',''))
                     if m: used.append(int(m.group(1)))
             except Exception: pass
     start=max(used,default=0)+1
-    return [f'PX-{date_code}-{start+i:03d}' for i in range(count)]
+    return [f'PO-{date_code}-{start+i:03d}' for i in range(count)]
 
 @app.post('/api/batches/{id}/revise')
 def revise(id:str,req:Revision):
@@ -297,7 +301,7 @@ def export(id:str,inventory_only:bool=False):
             align='left' if label in long_fields else 'center'
             base=field_widths.get(label,12)
             values=[str(label)]+[str(row[j]) for row in rows if j<len(row)]
-            content_width=max(1,max((len(v) for v in values),default=0)+5)
+            content_width=max(1,max((display_width(v) for v in values),default=0)+5)
             s.set_column(j,j,content_width,formats[align])
             s.write(0,j,label,headers[align])
         for i,row in enumerate(rows,1):
@@ -324,7 +328,8 @@ def export(id:str,inventory_only:bool=False):
                 sheet('采购订单-'+safe,['采购单号','物料编号','规格型号','封装','最小包装','采购数量','供应商','其他字段'],[[order['number'],l['code'],lookup[l['code']]['spec'],lookup[l['code']]['package'],float(dec(lookup[l['code']].get('min_unit','0'))),float(dec(l['qty'])),order['supplier'],po['basis']] for l in order['lines']])
         else:
             sheet('采购订单',['采购单号','物料编号','规格型号','封装','最小包装','采购数量','供应商','其他字段'],[])
-        sim=sheet('库存模拟',['物料编号','库存','模拟入库','模拟发料','模拟净需求','模拟结存'],[])
+        sim_rows=[[r['code'],float(dec(lookup[r['code']]['stock'])),float(dec(r.get('incoming','0'))),float(dec(r.get('outgoing','0'))),float(dec(r.get('production','0'))),float(dec(r['balance']))] for r in b['simulation']]
+        sim=sheet('库存模拟',['物料编号','库存','模拟入库','模拟发料','模拟净需求','模拟结存'],sim_rows)
         lookup={l['code']:l for l in b['lines']}
         for i,r in enumerate(b['simulation'],1):
             n=i+1;sim.write_row(i,0,[r['code'],float(dec(lookup[r['code']]['stock'])),float(dec(r.get('incoming','0'))),float(dec(r.get('outgoing','0'))),float(dec(r.get('production','0')))])
