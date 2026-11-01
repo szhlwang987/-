@@ -2,6 +2,8 @@ import os,tempfile,unittest
 os.environ['PCBA_DATA_DIRECTORY']=tempfile.mkdtemp(prefix='pcba-tests-')
 from fastapi.testclient import TestClient
 from app.main import app
+import app.main as main
+main.INVENTORY_OUTPUT_DIR=main.DATA
 from io import BytesIO
 from openpyxl import load_workbook
 
@@ -23,11 +25,60 @@ class Workflow(unittest.TestCase):
   self.assertIsNone(self.c.get('/api/batches/'+b['id']).json()['purchase'])
   out=self.c.get('/api/batches/'+new['id']+'/export');self.assertEqual(out.status_code,200)
   wb=load_workbook(BytesIO(out.content));self.assertEqual(len(wb.sheetnames),9)
-  self.assertTrue(wb['发料记录']['F2'].value.startswith('='))
+  self.assertTrue(wb['发料记录']['H2'].value.startswith('='))
   cached=load_workbook(BytesIO(out.content),data_only=True)
-  self.assertIsInstance(cached['发料记录']['F2'].value,(int,float))
+  self.assertIsInstance(cached['发料记录']['H2'].value,(int,float))
   inv=load_workbook(BytesIO(self.c.get('/api/batches/'+b['id']+'/export?inventory_only=true').content))
   self.assertEqual(inv['库存明细'].max_row,13)
+ def test_export_fields_formats_and_suppliers(self):
+  from openpyxl.utils import get_column_letter
+  b=self.batch()
+  r=self.c.post('/api/batches/'+b['id']+'/revise',json={'purchase_basis':'final'})
+  self.assertEqual(r.status_code,200,r.text)
+  b=r.json()
+  supplier=next(x for x in b['purchase']['lines'] if x['code']=='R-0402-100R-01')['supplier']
+  self.assertEqual(supplier,'供应商1')
+  wb=load_workbook(BytesIO(self.c.get('/api/batches/'+b['id']+'/export').content))
+  self.assertEqual(wb['BOM 明细']['A1'].value,'客户物料编码')
+  self.assertEqual({row[0].value for row in list(wb['BOM 明细'].rows)[1:]},{'A79A1900032','ZNDZ000042'})
+  for name in ['发料记录','采购订单']:
+   headers=[c.value for c in wb[name][1]]
+   code=headers.index('物料编号')
+   self.assertEqual(headers[code+1:code+3],['规格/型号','封装'])
+  long_fields={'客户物料编码','规格型号','规格/型号','封装','供应商','来源'}
+  for sheet in wb:
+   for j,c in enumerate(sheet[1],1):
+    wide=c.value in long_fields
+    self.assertEqual(c.alignment.horizontal,'left' if wide else 'center',(sheet.title,c.coordinate))
+    letter=get_column_letter(j)
+    dim=next(d for d in sheet.column_dimensions.values() if d.min<=j<=d.max)
+    self.assertAlmostEqual(dim.width,30.7109375 if wide else 10.7109375,places=4)
+    if sheet.max_row>1:
+     self.assertEqual(sheet.cell(2,j).alignment.horizontal,'left' if wide else 'center',(sheet.title,letter))
+ def test_dated_inventory_closing_and_overwrite(self):
+  b=self.batch()
+  r=self.c.post('/api/batches/'+b['id']+'/revise',json={'adjustments':{'R-0402-100R-01':{'final':'120000','reason':'整盘采购'}},'purchase_basis':'final'})
+  self.assertEqual(r.status_code,200,r.text)
+  first=r.json();self.assertRegex(first['closing_inventory']['name'],r'^库存表-\d{8}\.xlsx$')
+  wb=load_workbook(BytesIO(self.c.get('/api/batches/'+first['id']+'/closing-inventory').content),data_only=True)
+  records={row[0]:row[3] for row in wb.active.iter_rows(min_row=2,values_only=True)}
+  self.assertEqual(records['R-0402-100R-01'],8622)
+  self.assertEqual(len(records),12)
+  target=main.INVENTORY_OUTPUT_DIR/first['closing_inventory']['name']
+  self.assertTrue(target.exists())
+  r=self.c.post('/api/batches/'+first['id']+'/revise',json={'adjustments':{'R-0402-100R-01':{'final':'121000','reason':'新增采购'}},'purchase_basis':'final'})
+  self.assertEqual(r.status_code,200,r.text)
+  wb=load_workbook(target,data_only=True)
+  self.assertEqual({row[0]:row[3] for row in wb.active.iter_rows(min_row=2,values_only=True)}['R-0402-100R-01'],9622)
+  historical=load_workbook(BytesIO(self.c.get('/api/batches/'+first['id']+'/closing-inventory').content),data_only=True)
+  self.assertEqual({row[0]:row[3] for row in historical.active.iter_rows(min_row=2,values_only=True)}['R-0402-100R-01'],8622)
+ def test_dated_inventory_write_failure(self):
+  from unittest.mock import patch
+  b=self.batch()
+  with patch.object(main,'INVENTORY_OUTPUT_DIR',main.DATA/'missing-directory'):
+   r=self.c.post('/api/batches/'+b['id']+'/revise',json={'purchase_basis':'final'})
+  self.assertEqual(r.status_code,400)
+  self.assertIsNone(self.c.get('/api/batches/'+b['id']).json()['purchase'])
  def test_block_bad_quantity(self):
   d=self.c.post('/api/demo').json();d['orders']['rows'][0]['qty']='0'
   self.assertEqual(self.c.post('/api/calculate',json=d).status_code,400)

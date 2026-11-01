@@ -3,6 +3,8 @@ from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from io import BytesIO
 import os, json, sqlite3, hashlib, re, uuid
+from zoneinfo import ZoneInfo
+from threading import Lock
 import pandas as pd
 import xlsxwriter
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -14,6 +16,8 @@ BOM_DIR = Path(os.getenv('BOM_DIRECTORY', str(ROOT))).resolve()
 DATA = Path(os.getenv('PCBA_DATA_DIRECTORY', str(ROOT / '.local')))
 DATA.mkdir(parents=True, exist_ok=True)
 app = FastAPI(title='PCBA 物料计划')
+INVENTORY_OUTPUT_DIR = BOM_DIR
+INVENTORY_WRITE_LOCK = Lock()
 
 def connection():
     c = sqlite3.connect(DATA / 'pcba.sqlite3')
@@ -170,6 +174,38 @@ class Revision(BaseModel):
     purchase_basis:str|None=None
     simulation:list=[]
 
+def closing_inventory(batch):
+    rows={r['code']:dict(r) for r in batch['inventory']['rows']}
+    for r in batch['supplemented']:
+        rows.setdefault(r['code'],dict(r))
+    for line in batch['lines']:
+        rows[line['code']]['stock']=line['balance']
+    return list(rows.values())
+
+def closing_workbook(batch):
+    output=BytesIO()
+    workbook=xlsxwriter.Workbook(output,{'in_memory':True,'strings_to_formulas':False,'strings_to_urls':False})
+    sheet=workbook.add_worksheet('库存明细')
+    columns=[('code','物料编号'),('spec','规格/型号'),('package','封装'),('stock','库存'),('supplier','供应商')]
+    for j,(key,label) in enumerate(columns):
+        wide=key in ['spec','package','supplier']
+        fmt=workbook.add_format({'align':'left' if wide else 'center','valign':'vcenter','num_format':'0.#########'})
+        sheet.set_column(j,j,30 if wide else 10,fmt)
+        sheet.write(0,j,label,workbook.add_format({'bold':True,'align':'left' if wide else 'center','bg_color':'#DBEAFE','border':1}))
+        for i,row in enumerate(closing_inventory(batch),1):
+            value=float(dec(row['stock'])) if key=='stock' else row.get(key,'')
+            sheet.write(i,j,value,fmt)
+    sheet.freeze_panes(1,0)
+    workbook.close()
+    return output.getvalue()
+
+@app.get('/api/batches/{id}/closing-inventory')
+def download_closing_inventory(id:str):
+    b=load(id)
+    if not b.get('closing_inventory'): raise HTTPException(404,'该批次尚未生成日期库存表')
+    from urllib.parse import quote
+    return Response(closing_workbook(b),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(b['closing_inventory']['name'])})
+
 @app.post('/api/batches/{id}/revise')
 def revise(id:str,req:Revision):
     b=load(id)
@@ -184,7 +220,7 @@ def revise(id:str,req:Revision):
             line['balance']=str(dec(line['stock'])+dec(line['final'])-dec(line['demand']))
         if req.purchase_basis:
             if req.purchase_basis not in ['auto','final']: raise ValueError('请选择采购口径')
-            b['purchase']={'number':'PO-'+datetime.now().strftime('%Y%m%d')+'-'+uuid.uuid4().hex[:10].upper(),'basis':req.purchase_basis,'lines':[dict(code=l['code'],qty=l[req.purchase_basis],supplier='') for l in b['lines'] if dec(l[req.purchase_basis])>0]}
+            b['purchase']={'number':'PO-'+datetime.now().strftime('%Y%m%d')+'-'+uuid.uuid4().hex[:10].upper(),'basis':req.purchase_basis,'lines':[dict(code=l['code'],qty=l[req.purchase_basis],supplier=next((r.get('supplier','') for r in b['inventory']['rows'] if r['code']==l['code']),'')) for l in b['lines'] if dec(l[req.purchase_basis])>0]}
         else: b['purchase']=None
         by_code={l['code']:l for l in b['lines']}
         sims=[]
@@ -194,18 +230,46 @@ def revise(id:str,req:Revision):
             if min(incoming,outgoing,production)<0: raise ValueError('模拟输入不能为负数')
             sims.append(dict(s,balance=str(dec(by_code[s['code']]['stock'])+incoming-outgoing-production*Decimal('1.003'))))
         b['simulation']=sims; b['parent']=id; b['id']=uuid.uuid4().hex; b['created']=datetime.now(timezone.utc).isoformat()
+        b.pop('closing_inventory',None)
+        if req.purchase_basis:
+            date=datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y%m%d')
+            name=f'库存表-{date}.xlsx'
+            raw=closing_workbook(b)
+            target=INVENTORY_OUTPUT_DIR/name
+            temporary=INVENTORY_OUTPUT_DIR/('.'+uuid.uuid4().hex+'.tmp')
+            with INVENTORY_WRITE_LOCK:
+                try:
+                    previous=target.read_bytes() if target.exists() else None
+                    if previous is not None:
+                        (DATA/('inventory-backup-'+uuid.uuid4().hex+'.xlsx')).write_bytes(previous)
+                    temporary.write_bytes(raw)
+                    os.replace(temporary,target)
+                    b['closing_inventory']={'name':name,'path':str(target),'sha':digest(raw)}
+                    try:
+                        return save(b)
+                    except Exception:
+                        if previous is None: target.unlink(missing_ok=True)
+                        else: target.write_bytes(previous)
+                        raise
+                finally:
+                    temporary.unlink(missing_ok=True)
         return save(b)
     except Exception as e: raise HTTPException(400,str(e))
 
 @app.get('/api/batches/{id}/export')
 def export(id:str,inventory_only:bool=False):
     b=load(id); output=BytesIO(); w=xlsxwriter.Workbook(output,{'in_memory':True,'strings_to_formulas':False,'strings_to_urls':False})
-    header=w.add_format({'bold':True,'bg_color':'#DBEAFE','border':1})
+    long_fields={'客户物料编码','规格型号','规格/型号','封装','供应商','来源'}
+    formats={align:w.add_format({'align':align,'valign':'vcenter','num_format':'0.#########'}) for align in ['left','center']}
+    headers={align:w.add_format({'bold':True,'bg_color':'#DBEAFE','border':1,'align':align,'valign':'vcenter'}) for align in ['left','center']}
     def sheet(name,cols,rows):
-        s=w.add_worksheet(name); s.freeze_panes(1,0); s.set_column(0,len(cols)-1,22)
-        s.write_row(0,0,cols,header)
+        s=w.add_worksheet(name); s.freeze_panes(1,0)
+        for j,label in enumerate(cols):
+            align='left' if label in long_fields else 'center'
+            s.set_column(j,j,30 if label in long_fields else 10,formats[align])
+            s.write(0,j,label,headers[align])
         for i,row in enumerate(rows,1):
-            for j,v in enumerate(row): s.write(i,j,v)
+            for j,v in enumerate(row): s.write(i,j,v,formats['left' if cols[j] in long_fields else 'center'])
         if rows: s.autofilter(0,0,len(rows),len(cols)-1)
         return s
     inventory=[dict(r,source='原库存') for r in b['inventory']['rows']]+b['supplemented']
@@ -214,14 +278,15 @@ def export(id:str,inventory_only:bool=False):
         details=[]
         for l in b['lines']:
             for src in l['sources']: details.append([src['pcba'],src['version'],l['code'],l['spec'],l['package'],float(dec(src['usage']))])
-        sheet('BOM 明细',['PCBA','BOM版本','物料编号','规格/型号','封装','单机用量'],details)
+        sheet('BOM 明细',['客户物料编码','BOM版本','物料编号','规格/型号','封装','单机用量'],details)
         sheet('物料需求汇总',['物料编号','规格/型号','总用量','损耗后需求','库存'],[[l['code'],l['spec'],float(dec(l['gross'])),float(dec(l['demand'])),float(dec(l['stock']))] for l in b['lines']])
-        s=sheet('发料记录',['物料编号','总用量','库存','自动发料','最终发料','理论结存','修改原因'],[])
+        s=sheet('发料记录',['物料编号','规格/型号','封装','总用量','库存','自动发料','最终发料','理论结存','修改原因'],[])
         for i,l in enumerate(b['lines'],1):
-            n=i+1; s.write(i,0,l['code']); s.write_number(i,1,float(dec(l['gross']))); s.write_number(i,2,float(dec(l['stock'])))
-            s.write_formula(i,3,f'=MAX(0,B{n}*1.003-C{n})',None,float(dec(l['auto'])))
-            s.write_number(i,4,float(dec(l['final']))); s.write_formula(i,5,f'=C{n}+E{n}-B{n}*1.003',None,float(dec(l['balance']))); s.write(i,6,l['reason'])
-        po=b['purchase']; sheet('采购订单',['采购单号','物料编号','采购数量','供应商','数量口径'],[[po['number'],l['code'],float(dec(l['qty'])),l['supplier'],po['basis']] for l in po['lines']] if po else [])
+            n=i+1; s.write_row(i,0,[l['code'],l['spec'],l['package'],float(dec(l['gross'])),float(dec(l['stock']))])
+            s.write_formula(i,5,f'=MAX(0,D{n}*1.003-E{n})',None,float(dec(l['auto'])))
+            s.write_number(i,6,float(dec(l['final']))); s.write_formula(i,7,f'=E{n}+G{n}-D{n}*1.003',None,float(dec(l['balance']))); s.write(i,8,l['reason'],formats['center'])
+        po=b['purchase']; lookup={l['code']:l for l in b['lines']}
+        sheet('采购订单',['采购单号','物料编号','规格/型号','封装','采购数量','供应商','数量口径'],[[po['number'],l['code'],lookup[l['code']]['spec'],lookup[l['code']]['package'],float(dec(l['qty'])),l.get('supplier',''),po['basis']] for l in po['lines']] if po else [])
         sim=sheet('库存模拟',['物料编号','库存','模拟入库','模拟发料','模拟净需求','模拟结存'],[])
         lookup={l['code']:l for l in b['lines']}
         for i,r in enumerate(b['simulation'],1):
