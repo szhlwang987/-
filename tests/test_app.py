@@ -40,6 +40,7 @@ class Workflow(unittest.TestCase):
   self.assertEqual(supplier,'供应商1')
   wb=load_workbook(BytesIO(self.c.get('/api/batches/'+b['id']+'/export').content))
   self.assertEqual(wb['BOM 明细']['A1'].value,'客户物料编码')
+  self.assertEqual([c.value for c in wb['库存明细'][1]][3:6],['库存','最小采购单位','供应商'])
   self.assertEqual({row[0].value for row in list(wb['BOM 明细'].rows)[1:]},{'A79A1900032','ZNDZ000042'})
   for name in ['发料记录']:
    headers=[c.value for c in wb[name][1]]
@@ -57,7 +58,7 @@ class Workflow(unittest.TestCase):
     letter=get_column_letter(j)
     dim=next(d for d in sheet.column_dimensions.values() if d.min<=j<=d.max)
     expected={'客户物料编码':16,'物料编号':19,'规格型号':36,'规格/型号':36,'BOM版本':12,'采购数量':15,'单机用量':15,'损耗后需求':16,'最小采购单位':15,'封装':30,'供应商':30,'来源':30}.get(c.value,12)
-    self.assertAlmostEqual(dim.width,expected+0.7109375,places=4)
+    self.assertGreaterEqual(dim.width,expected+0.7109375)
     if sheet.max_row>1:
      self.assertEqual(sheet.cell(2,j).alignment.horizontal,'left' if wide else 'center',(sheet.title,letter))
  def test_dated_inventory_closing_and_overwrite(self):

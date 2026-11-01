@@ -58,7 +58,7 @@ def table(raw, aliases, required):
                 return result
     raise ValueError('未识别必需表头：'+','.join(required))
 
-ALIASES={'code':['物料编号','物料编码'], 'spec':['规格/型号','规格型号','型号'], 'package':['封装'], 'qty':['采购数量'], 'stock':['库存','结存','结存数量','库存数量'], 'usage':['用量','单机用量'], 'order':['订单号','订单编号'], 'supplier':['供应商'], 'min_unit':['最小采购单位','最小采购量','采购最小单位','MOQ']}
+ALIASES={'code':['物料编号','物料编码'], 'spec':['规格/型号','规格型号','型号'], 'package':['封装'], 'qty':['采购数量'], 'stock':['库存','结存','结存数量','库存数量'], 'usage':['用量','单机用量'], 'order':['订单号','订单编号'], 'supplier':['供应商'], 'min_unit':['最小采购单位','最小采购量','采购最小单位','MOQ'], 'type':['类型','物料类型']}
 
 def digest(raw): return hashlib.sha256(raw).hexdigest()
 
@@ -193,12 +193,12 @@ def closing_workbook(batch):
     output=BytesIO()
     workbook=xlsxwriter.Workbook(output,{'in_memory':True,'strings_to_formulas':False,'strings_to_urls':False})
     sheet=workbook.add_worksheet('库存明细')
-    columns=[('code','物料编号'),('spec','规格型号'),('package','封装'),('stock','库存'),('supplier','供应商'),('min_unit','最小采购单位')]
+    columns=[('code','物料编号'),('spec','规格型号'),('package','封装'),('stock','库存'),('min_unit','最小采购单位'),('supplier','供应商')]
     for j,(key,label) in enumerate(columns):
         left=key in ['code','spec','package','supplier']
         widths={'code':19,'spec':36,'package':30,'supplier':30,'stock':12,'min_unit':15}
         fmt=workbook.add_format({'align':'left' if left else 'center','valign':'vcenter','num_format':'0.#########'})
-        sheet.set_column(j,j,widths[key],fmt)
+        values=[label]+[str(row.get(key,'')) for row in closing_inventory(batch)]; sheet.set_column(j,j,min(60,max(widths[key],max((len(str(v)) for v in values),default=0)+2)),fmt)
         sheet.write(0,j,label,workbook.add_format({'bold':True,'align':'left' if left else 'center','bg_color':'#DBEAFE','border':1}))
         for i,row in enumerate(closing_inventory(batch),1):
             value=float(dec(row['stock'])) if key=='stock' else row.get(key,'')
@@ -281,7 +281,10 @@ def export(id:str,inventory_only:bool=False):
         s=w.add_worksheet(name); s.freeze_panes(1,0)
         for j,label in enumerate(cols):
             align='left' if label in long_fields else 'center'
-            s.set_column(j,j,field_widths.get(label,12),formats[align])
+            base=field_widths.get(label,12)
+            values=[str(label)]+[str(row[j]) for row in rows if j<len(row)]
+            content_width=min(60,max(base,max((len(v) for v in values),default=0)+2))
+            s.set_column(j,j,content_width,formats[align])
             s.write(0,j,label,headers[align])
         for i,row in enumerate(rows,1):
             for j,v in enumerate(row): s.write(i,j,v,formats['left' if cols[j] in long_fields else 'center'])
@@ -314,7 +317,7 @@ def export(id:str,inventory_only:bool=False):
             sim.write_formula(i,5,f'=B{n}+C{n}-D{n}-E{n}*1.003',None,float(dec(r['balance'])))
         sheet('异常检查',['问题','状态'],[])
         sheet('计算记录',['参数','值'],[['批次',b['id']],['时间',b['created']],['损耗系数',b['factor']],['算法',b['algorithm']],['BOM版本及摘要',json.dumps(b['boms'],ensure_ascii=False)],['订单摘要',b['orders'].get('sha','')],['库存摘要',b['inventory'].get('sha','')],['采购口径',po['basis'] if po else '未生成'],['采购订单数',len(po['orders']) if po else 0]])
-    sheet('库存明细',['物料编号','规格型号','封装','库存','供应商','最小采购单位','来源'],[[r['code'],r.get('spec',''),r.get('package',''),float(dec(r['stock'])),r.get('supplier',''),float(dec(r.get('min_unit','0') or '0')),r['source']] for r in inventory])
+    sheet('库存明细',['物料编号','规格型号','封装','库存','最小采购单位','供应商','来源'],[[r['code'],r.get('spec',''),r.get('package',''),float(dec(r['stock'])),float(dec(r.get('min_unit','0') or '0')),r.get('supplier',''),r['source']] for r in inventory])
     w.close()
     return Response(output.getvalue(),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':f'attachment; filename="pcba-{id[:8]}.xlsx"'})
 
