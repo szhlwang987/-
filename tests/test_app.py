@@ -77,6 +77,14 @@ class Workflow(unittest.TestCase):
   self.assertEqual({row[0]:row[3] for row in wb.active.iter_rows(min_row=2,values_only=True)}['R-0402-100R-01'],9622)
   historical=load_workbook(BytesIO(self.c.get('/api/batches/'+first['id']+'/closing-inventory').content),data_only=True)
   self.assertEqual({row[0]:row[3] for row in historical.active.iter_rows(min_row=2,values_only=True)}['R-0402-100R-01'],8622)
+ def test_closing_inventory_material_format(self):
+  b=self.batch(); r=self.c.post('/api/batches/'+b['id']+'/revise',json={'purchase_basis':'final'})
+  self.assertEqual(r.status_code,200,r.text)
+  wb=load_workbook(BytesIO(self.c.get('/api/batches/'+r.json()['id']+'/closing-inventory').content))
+  ws=wb.active
+  self.assertEqual(ws['A1'].value,'物料编号')
+  self.assertAlmostEqual(ws.column_dimensions['A'].width,19.7109375,places=4)
+  self.assertEqual(ws['A1'].alignment.horizontal,'left'); self.assertEqual(ws['A2'].alignment.horizontal,'left')
  def test_dated_inventory_write_failure(self):
   from unittest.mock import patch
   b=self.batch()

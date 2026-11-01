@@ -188,10 +188,11 @@ def closing_workbook(batch):
     sheet=workbook.add_worksheet('库存明细')
     columns=[('code','物料编号'),('spec','规格/型号'),('package','封装'),('stock','库存'),('supplier','供应商')]
     for j,(key,label) in enumerate(columns):
-        wide=key in ['spec','package','supplier']
-        fmt=workbook.add_format({'align':'left' if wide else 'center','valign':'vcenter','num_format':'0.#########'})
-        sheet.set_column(j,j,30 if wide else 10,fmt)
-        sheet.write(0,j,label,workbook.add_format({'bold':True,'align':'left' if wide else 'center','bg_color':'#DBEAFE','border':1}))
+        left=key in ['code','spec','package','supplier']
+        widths={'code':19,'spec':36,'package':30,'supplier':30,'stock':12}
+        fmt=workbook.add_format({'align':'left' if left else 'center','valign':'vcenter','num_format':'0.#########'})
+        sheet.set_column(j,j,widths[key],fmt)
+        sheet.write(0,j,label,workbook.add_format({'bold':True,'align':'left' if left else 'center','bg_color':'#DBEAFE','border':1}))
         for i,row in enumerate(closing_inventory(batch),1):
             value=float(dec(row['stock'])) if key=='stock' else row.get(key,'')
             sheet.write(i,j,value,fmt)
