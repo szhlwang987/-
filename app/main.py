@@ -58,7 +58,7 @@ def table(raw, aliases, required):
                 return result
     raise ValueError('未识别必需表头：'+','.join(required))
 
-ALIASES={'code':['物料编号','物料编码'], 'spec':['规格/型号','规格型号','型号'], 'package':['封装'], 'qty':['采购数量'], 'stock':['库存','结存','结存数量','库存数量'], 'usage':['用量','单机用量'], 'order':['订单号','订单编号'], 'supplier':['供应商'], 'min_unit':['最小采购单位','最小采购量','采购最小单位','MOQ'], 'type':['类型','物料类型']}
+ALIASES={'code':['物料编号','物料编码'], 'spec':['规格/型号','规格型号','型号'], 'package':['封装'], 'qty':['采购数量'], 'stock':['库存','结存','结存数量','库存数量'], 'usage':['用量','单机用量'], 'order':['订单号','订单编号'], 'supplier':['供应商'], 'min_unit':['最小包装','最小采购单位','最小采购量','采购最小单位','MOQ'], 'type':['类型','物料类型']}
 
 def digest(raw): return hashlib.sha256(raw).hexdigest()
 
@@ -187,18 +187,18 @@ def closing_inventory(batch):
         rows.setdefault(r['code'],dict(r))
     for line in batch['lines']:
         rows[line['code']]['stock']=line['balance']
-    return list(rows.values())
+    return [rows[k] for k in sorted(rows)]
 
 def closing_workbook(batch):
     output=BytesIO()
     workbook=xlsxwriter.Workbook(output,{'in_memory':True,'strings_to_formulas':False,'strings_to_urls':False})
     sheet=workbook.add_worksheet('库存明细')
-    columns=[('code','物料编号'),('spec','规格型号'),('package','封装'),('stock','库存'),('min_unit','最小采购单位'),('supplier','供应商')]
+    columns=[('code','物料编号'),('spec','规格型号'),('package','封装'),('stock','库存'),('min_unit','最小包装'),('supplier','供应商')]
     for j,(key,label) in enumerate(columns):
         left=key in ['code','spec','package','supplier']
         widths={'code':19,'spec':36,'package':30,'supplier':30,'stock':12,'min_unit':15}
         fmt=workbook.add_format({'align':'left' if left else 'center','valign':'vcenter','num_format':'0.#########'})
-        values=[label]+[str(row.get(key,'')) for row in closing_inventory(batch)]; sheet.set_column(j,j,min(60,max(widths[key],max((len(str(v)) for v in values),default=0)+2)),fmt)
+        values=[label]+[str(row.get(key,'')) for row in closing_inventory(batch)]; sheet.set_column(j,j,max(1,max((len(str(v)) for v in values),default=0)+2),fmt)
         sheet.write(0,j,label,workbook.add_format({'bold':True,'align':'left' if left else 'center','bg_color':'#DBEAFE','border':1}))
         for i,row in enumerate(closing_inventory(batch),1):
             value=float(dec(row['stock'])) if key=='stock' else row.get(key,'')
@@ -213,6 +213,18 @@ def download_closing_inventory(id:str):
     if not b.get('closing_inventory'): raise HTTPException(404,'该批次尚未生成日期库存表')
     from urllib.parse import quote
     return Response(closing_workbook(b),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(b['closing_inventory']['name'])})
+
+def next_purchase_number(date_code, count=1):
+    used=[]
+    with connection() as c:
+        for (payload,) in c.execute('SELECT payload FROM batches'):
+            try:
+                for order in (json.loads(payload).get('purchase') or {}).get('orders',[]):
+                    m=re.match(r'^PX-'+date_code+r'-(\d{3})$',order.get('number',''))
+                    if m: used.append(int(m.group(1)))
+            except Exception: pass
+    start=max(used,default=0)+1
+    return [f'PX-{date_code}-{start+i:03d}' for i in range(count)]
 
 @app.post('/api/batches/{id}/revise')
 def revise(id:str,req:Revision):
@@ -232,8 +244,10 @@ def revise(id:str,req:Revision):
             grouped={}
             for line in all_lines: grouped.setdefault(line['supplier'] or '未指定供应商',[]).append(line)
             orders=[]
-            for supplier,lines in sorted(grouped.items()):
-                orders.append({'number':'PO-'+datetime.now().strftime('%Y%m%d')+'-'+uuid.uuid4().hex[:8].upper(),'supplier':supplier,'lines':lines})
+            date_code=datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y%m%d')
+            numbers=next_purchase_number(date_code,len(grouped))
+            for number,(supplier,lines) in zip(numbers,sorted(grouped.items())):
+                orders.append({'number':number,'supplier':supplier,'lines':lines})
             b['purchase']={'basis':req.purchase_basis,'orders':orders,'lines':all_lines}
         else: b['purchase']=None
         by_code={l['code']:l for l in b['lines']}
@@ -273,7 +287,7 @@ def revise(id:str,req:Revision):
 @app.get('/api/batches/{id}/export')
 def export(id:str,inventory_only:bool=False):
     b=load(id); output=BytesIO(); w=xlsxwriter.Workbook(output,{'in_memory':True,'strings_to_formulas':False,'strings_to_urls':False})
-    field_widths={'客户物料编码':16,'物料编号':19,'规格型号':36,'规格/型号':36,'BOM版本':12,'采购数量':15,'单机用量':15,'损耗后需求':16,'封装':30,'供应商':30,'来源':30,'最小采购单位':15}
+    field_widths={'客户物料编码':16,'物料编号':19,'规格型号':36,'规格/型号':36,'BOM版本':12,'采购数量':15,'单机用量':15,'损耗后需求':16,'封装':30,'供应商':30,'来源':30,'最小包装':15}
     long_fields={'客户物料编码','物料编号','规格型号','规格/型号','封装','供应商','来源'}
     formats={align:w.add_format({'align':align,'valign':'vcenter','num_format':'0.#########'}) for align in ['left','center']}
     headers={align:w.add_format({'bold':True,'bg_color':'#DBEAFE','border':1,'align':align,'valign':'vcenter'}) for align in ['left','center']}
@@ -283,7 +297,7 @@ def export(id:str,inventory_only:bool=False):
             align='left' if label in long_fields else 'center'
             base=field_widths.get(label,12)
             values=[str(label)]+[str(row[j]) for row in rows if j<len(row)]
-            content_width=min(60,max(base,max((len(v) for v in values),default=0)+2))
+            content_width=max(1,max((len(v) for v in values),default=0)+2)
             s.set_column(j,j,content_width,formats[align])
             s.write(0,j,label,headers[align])
         for i,row in enumerate(rows,1):
@@ -307,9 +321,9 @@ def export(id:str,inventory_only:bool=False):
         if po:
             for order in po['orders']:
                 safe=re.sub(r'[^0-9A-Za-z一-龥_-]+','_',order['supplier'])[:20]
-                sheet('采购订单-'+safe,['采购单号','物料编号','规格型号','封装','最小采购单位','采购数量','供应商','其他字段'],[[order['number'],l['code'],lookup[l['code']]['spec'],lookup[l['code']]['package'],float(dec(lookup[l['code']].get('min_unit','0'))),float(dec(l['qty'])),order['supplier'],po['basis']] for l in order['lines']])
+                sheet('采购订单-'+safe,['采购单号','物料编号','规格型号','封装','最小包装','采购数量','供应商','其他字段'],[[order['number'],l['code'],lookup[l['code']]['spec'],lookup[l['code']]['package'],float(dec(lookup[l['code']].get('min_unit','0'))),float(dec(l['qty'])),order['supplier'],po['basis']] for l in order['lines']])
         else:
-            sheet('采购订单',['采购单号','物料编号','规格型号','封装','最小采购单位','采购数量','供应商','其他字段'],[])
+            sheet('采购订单',['采购单号','物料编号','规格型号','封装','最小包装','采购数量','供应商','其他字段'],[])
         sim=sheet('库存模拟',['物料编号','库存','模拟入库','模拟发料','模拟净需求','模拟结存'],[])
         lookup={l['code']:l for l in b['lines']}
         for i,r in enumerate(b['simulation'],1):
@@ -317,7 +331,7 @@ def export(id:str,inventory_only:bool=False):
             sim.write_formula(i,5,f'=B{n}+C{n}-D{n}-E{n}*1.003',None,float(dec(r['balance'])))
         sheet('异常检查',['问题','状态'],[])
         sheet('计算记录',['参数','值'],[['批次',b['id']],['时间',b['created']],['损耗系数',b['factor']],['算法',b['algorithm']],['BOM版本及摘要',json.dumps(b['boms'],ensure_ascii=False)],['订单摘要',b['orders'].get('sha','')],['库存摘要',b['inventory'].get('sha','')],['采购口径',po['basis'] if po else '未生成'],['采购订单数',len(po['orders']) if po else 0]])
-    sheet('库存明细',['物料编号','规格型号','封装','库存','最小采购单位','供应商','来源'],[[r['code'],r.get('spec',''),r.get('package',''),float(dec(r['stock'])),float(dec(r.get('min_unit','0') or '0')),r.get('supplier',''),r['source']] for r in inventory])
+    sheet('库存明细',['物料编号','规格型号','封装','库存','最小采购单位','供应商','来源'],[[r['code'],r.get('spec',''),r.get('package',''),float(dec(r['stock'])),float(dec(r.get('min_unit','0') or '0')),r.get('supplier',''),r['source']] for r in sorted(inventory,key=lambda x:x['code'])])
     w.close()
     return Response(output.getvalue(),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':f'attachment; filename="pcba-{id[:8]}.xlsx"'})
 

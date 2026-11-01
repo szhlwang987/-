@@ -58,7 +58,7 @@ class Workflow(unittest.TestCase):
     letter=get_column_letter(j)
     dim=next(d for d in sheet.column_dimensions.values() if d.min<=j<=d.max)
     expected={'客户物料编码':16,'物料编号':19,'规格型号':36,'规格/型号':36,'BOM版本':12,'采购数量':15,'单机用量':15,'损耗后需求':16,'最小采购单位':15,'封装':30,'供应商':30,'来源':30}.get(c.value,12)
-    self.assertGreaterEqual(dim.width,expected+0.7109375)
+    self.assertGreaterEqual(dim.width,1.7109375)
     if sheet.max_row>1:
      self.assertEqual(sheet.cell(2,j).alignment.horizontal,'left' if wide else 'center',(sheet.title,letter))
  def test_dated_inventory_closing_and_overwrite(self):
@@ -84,7 +84,7 @@ class Workflow(unittest.TestCase):
   wb=load_workbook(BytesIO(self.c.get('/api/batches/'+r.json()['id']+'/closing-inventory').content))
   ws=wb.active
   self.assertEqual(ws['A1'].value,'物料编号')
-  self.assertAlmostEqual(ws.column_dimensions['A'].width,19.7109375,places=4)
+  self.assertAlmostEqual(ws.column_dimensions['A'].width,16.7109375,places=4)
   self.assertEqual(ws['A1'].alignment.horizontal,'left'); self.assertEqual(ws['A2'].alignment.horizontal,'left')
  def test_dated_inventory_write_failure(self):
   from unittest.mock import patch
